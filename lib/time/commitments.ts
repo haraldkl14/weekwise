@@ -73,3 +73,21 @@ export function blockedIntervals(fixed: FixedCommitments): LockedInterval[] {
     i.kind === "event" && buffer > 0 ? wrapWeek({ ...i, start: i.start - buffer, end: i.end + buffer }) : [i],
   );
 }
+
+/** Sanity checks for sleep input, e.g. a 15:00 bedtime typed by mistake. */
+export function sleepWarnings(sleep: SleepSchedule): string[] {
+  const check = (label: string, t: { bedtime: string; wake: string }) => {
+    const bed = parseHHMM(t.bedtime);
+    const start = bed < 12 * 60 ? bed + MINUTES_PER_DAY : bed;
+    let end = parseHHMM(t.wake) + MINUTES_PER_DAY;
+    while (end <= start) end += MINUTES_PER_DAY;
+    const hours = (end - start) / 60;
+    if (hours >= 24) return [`${label}: bedtime and wake-up are the same, so no sleep is blocked.`];
+    if (hours > 14) return [`${label}: ${t.bedtime}–${t.wake} is ${hours}h of sleep. Is the bedtime right? (Bedtimes from 12:00 count as evening.)`];
+    if (hours < 3) return [`${label}: only ${hours}h of sleep between ${t.bedtime} and ${t.wake}.`];
+    return [];
+  };
+  return sleep.splitWeekend
+    ? [...check("Weekday sleep", sleep.weekday), ...check("Weekend sleep", sleep.weekend)]
+    : check("Sleep", sleep.weekday);
+}

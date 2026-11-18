@@ -29,13 +29,15 @@ export function escapeText(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/;/g, "\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
 }
 
-/** Fold lines longer than 75 octets. */
+const octets = (s: string) => new TextEncoder().encode(s).length;
+
+/** Fold lines longer than 75 octets (works in the browser and Node). */
 function fold(line: string): string {
   const out: string[] = [];
   let rest = line;
-  while (Buffer.byteLength(rest, "utf8") > 75) {
+  while (octets(rest) > 75) {
     let cut = 75;
-    while (Buffer.byteLength(rest.slice(0, cut), "utf8") > 75) cut--;
+    while (octets(rest.slice(0, cut)) > 75) cut--;
     out.push(rest.slice(0, cut));
     rest = " " + rest.slice(cut);
   }

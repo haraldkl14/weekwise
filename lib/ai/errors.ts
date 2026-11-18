@@ -22,18 +22,18 @@ export function classifyProviderError(err: unknown): AiProviderError {
   const lower = msg.toLowerCase();
 
   if (lower.includes("api key not valid") || lower.includes("api_key_invalid") || status === 401 || status === 403) {
-    return new AiProviderError("invalid_key", MESSAGES.invalid_key);
+    return new AiProviderError("invalid_key", MESSAGES.invalid_key, { cause: err });
   }
   if (status === 429 || lower.includes("resource_exhausted") || lower.includes("quota")) {
     // Gemini uses 429 for both; a hard quota mentions it explicitly.
     const quota = lower.includes("exceeded your current quota") || lower.includes("billing") || lower.includes("per day");
-    return new AiProviderError(quota ? "quota_exceeded" : "rate_limited", quota ? MESSAGES.quota_exceeded : MESSAGES.rate_limited);
+    return new AiProviderError(quota ? "quota_exceeded" : "rate_limited", quota ? MESSAGES.quota_exceeded : MESSAGES.rate_limited, { cause: err });
   }
   if (status === 404 || (lower.includes("model") && lower.includes("not found"))) {
-    return new AiProviderError("not_configured", "The model in GEMINI_MODEL was not found. Check the model name.");
+    return new AiProviderError("not_configured", "The model in GEMINI_MODEL was not found. Check the model name.", { cause: err });
   }
   if ((status !== undefined && status >= 500) || lower.includes("fetch failed") || lower.includes("timeout")) {
-    return new AiProviderError("unavailable", MESSAGES.unavailable);
+    return new AiProviderError("unavailable", MESSAGES.unavailable, { cause: err });
   }
-  return new AiProviderError("unknown", MESSAGES.unknown);
+  return new AiProviderError("unknown", MESSAGES.unknown, { cause: err });
 }

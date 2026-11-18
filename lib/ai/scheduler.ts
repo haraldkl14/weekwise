@@ -35,8 +35,9 @@ export class AiProviderError extends Error {
   constructor(
     public readonly code: AiErrorCode,
     message: string,
+    options?: { cause?: unknown },
   ) {
-    super(message);
+    super(message, options);
     this.name = "AiProviderError";
   }
 }

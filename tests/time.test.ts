@@ -11,6 +11,7 @@ import {
   mergeIntervals,
   parseHHMM,
   planSessions,
+  sleepWarnings,
   subtractIntervals,
   wrapWeek,
 } from "@/lib/time";
@@ -236,5 +237,23 @@ describe("session planning", () => {
     expect(p.problem).toContain("Piano");
     expect(planSessions(activity({ minSessionHours: 2, maxSessionHours: 1 })).problem).toBeDefined();
     expect(planSessions(activity({ minSessionHours: 0.3 })).problem).toBeDefined();
+  });
+});
+
+describe("sleep sanity warnings", () => {
+  const s = (bedtime: string, wake: string) => ({ weekday: { bedtime, wake }, weekend: { bedtime, wake }, splitWeekend: false });
+  it("accepts normal nights, including after-midnight bedtimes", () => {
+    expect(sleepWarnings(s("23:00", "07:00"))).toEqual([]);
+    expect(sleepWarnings(s("01:30", "09:00"))).toEqual([]);
+  });
+  it("flags implausible input", () => {
+    expect(sleepWarnings(s("15:00", "07:00"))[0]).toContain("16h");
+    expect(sleepWarnings(s("23:00", "01:00"))[0]).toContain("only 2h");
+    expect(sleepWarnings(s("23:00", "23:00"))[0]).toContain("same");
+  });
+  it("checks weekend times only when split", () => {
+    const sleep = { weekday: { bedtime: "23:00", wake: "07:00" }, weekend: { bedtime: "15:00", wake: "07:00" }, splitWeekend: false };
+    expect(sleepWarnings(sleep)).toEqual([]);
+    expect(sleepWarnings({ ...sleep, splitWeekend: true })[0]).toContain("Weekend sleep");
   });
 });

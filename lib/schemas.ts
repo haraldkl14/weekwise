@@ -1,7 +1,8 @@
 import { z } from "zod";
+import type { Day } from "./types";
 
 const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Time must be HH:MM");
-const day = z.number().int().min(0).max(6);
+const day = z.number().int().min(0).max(6).transform((d) => d as Day);
 const name = z.string().trim().min(1).max(80);
 
 const timeBlock = z.object({
