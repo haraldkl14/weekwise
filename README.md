@@ -17,7 +17,7 @@ npm run dev
 | Variable | Purpose |
 | --- | --- |
 | `GEMINI_API_KEY` | Server-only. Never sent to the browser. |
-| `GEMINI_MODEL` | e.g. `gemini-2.5-flash`. Change models without code changes. |
+| `GEMINI_MODEL` | e.g. `gemini-3.8-flash`. Change models without code changes. |
 | `RATE_LIMIT_PER_HOUR` | Optional, default 10 generations per IP per hour. |
 
 Without a key the app still works: the error message offers the deterministic planner.

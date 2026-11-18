@@ -51,7 +51,8 @@ export class GeminiScheduler implements AiScheduler {
           systemInstruction: SYSTEM_INSTRUCTION,
           responseMimeType: "application/json",
           responseSchema: responseSchema(request.activities.map((a) => a.id)),
-          temperature: 0.2,
+          // No temperature override: Google advises keeping Gemini 3 models at the
+          // default (1.0); lower values can cause looping or worse reasoning.
         },
       });
       text = res.text;
