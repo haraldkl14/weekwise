@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { availableSlots } from "@/lib/time";
-import { movePlacement } from "@/lib/schedule/move";
 import { buildIcs, escapeText, mondayOf } from "@/lib/ics";
 import { RateLimiter, clientIp } from "@/lib/rateLimit";
 import { classifyProviderError } from "@/lib/ai/errors";
@@ -10,34 +9,21 @@ import { Placement } from "@/lib/types";
 import { activity, fixed, WORK } from "./fixtures";
 
 const SLOTS = availableSlots(fixed({ events: [WORK] }));
-const placements: Placement[] = [
-  { id: "a", activityId: "gym", day: 0, start: 18 * 60, end: 19 * 60 },
-  { id: "b", activityId: "gym", day: 1, start: 18 * 60, end: 19 * 60 },
-];
-
-describe("movePlacement", () => {
-  it("moves into free time and snaps to 15 minutes", () => {
-    const r = movePlacement(placements, "a", 2, 20 * 60 + 8, SLOTS); // nearest quarter: 20:15
-    expect(r.ok && r.placements[0]).toEqual({ id: "a", activityId: "gym", day: 2, start: 20 * 60 + 15, end: 21 * 60 + 15 });
-  });
-  it("rejects dropping onto a locked block or its buffer", () => {
-    expect(movePlacement(placements, "a", 2, 10 * 60, SLOTS).ok).toBe(false);
-    expect(movePlacement(placements, "a", 2, 15 * 60 + 30, SLOTS).ok).toBe(false); // ends in buffer
-    expect(movePlacement(placements, "a", 2, 22 * 60 + 30, SLOTS).ok).toBe(false); // runs into sleep
-  });
-  it("rejects collisions with other sessions but allows moving onto itself", () => {
-    expect(movePlacement(placements, "a", 1, 18 * 60 + 30, SLOTS)).toMatchObject({ ok: false, reason: expect.stringContaining("another session") });
-    expect(movePlacement(placements, "a", 0, 18 * 60 + 30, SLOTS).ok).toBe(true);
-  });
-});
 
 describe("ics export", () => {
-  const acts = [activity({ id: "gym", name: "Gym, legs; core", notes: "bring\nshoes" })];
-  const ics = buildIcs(
-    [...placements, { id: "late", activityId: "gym", day: 6, start: 23 * 60, end: 24 * 60 }],
-    acts,
-    { weekStart: new Date(2026, 10, 16), now: new Date(Date.UTC(2026, 10, 18, 9, 0, 0)), repeatWeeks: 4 },
-  );
+  const ev = (uid: string, day: number, start: number, end: number) => ({
+    uid,
+    title: "Gym, legs; core",
+    description: "bring\nshoes",
+    day: day as Placement["day"],
+    start,
+    end,
+  });
+  const ics = buildIcs([ev("a", 0, 18 * 60, 19 * 60), ev("b", 1, 18 * 60, 19 * 60), ev("late", 6, 23 * 60, 24 * 60)], {
+    weekStart: new Date(2026, 10, 16),
+    now: new Date(Date.UTC(2026, 10, 18, 9, 0, 0)),
+    repeatWeeks: 4,
+  });
 
   it("emits one VEVENT per placement with local floating times", () => {
     expect(ics.match(/BEGIN:VEVENT/g)).toHaveLength(3);
@@ -52,7 +38,7 @@ describe("ics export", () => {
     expect(ics).toContain("DTEND:20261123T000000");
   });
   it("escapes text", () => {
-    expect(ics).toContain("SUMMARY:Gym\\, legs\; core");
+    expect(ics).toContain(String.raw`SUMMARY:Gym\, legs\; core`);
     expect(escapeText("a\nb\\c")).toBe("a\\nb\\\\c");
   });
   it("finds the Monday of a week", () => {

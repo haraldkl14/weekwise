@@ -5,6 +5,7 @@ import { DAY_SHORT, FixedCommitments, SleepTimes, TimeBlock } from "@/lib/types"
 import { availableMinutes, findOverlaps, formatHours, lockedIntervals, sleepWarnings } from "@/lib/time";
 import { emptyBlock } from "@/lib/defaults";
 import { WeekCalendar } from "../WeekCalendar";
+import { lockedToBlocks } from "@/lib/schedule/week";
 import { Alert, Button, Card, Field, inputClass } from "../ui";
 import { TimeBlockForm } from "../forms/TimeBlockForm";
 
@@ -112,7 +113,7 @@ function SleepRow({ label, value, onChange }: { label: string; value: SleepTimes
 }
 
 export function FixedStep({ fixed, setFixed, onNext }: { fixed: FixedCommitments; setFixed: (f: FixedCommitments) => void; onNext: () => void }) {
-  const locked = useMemo(() => lockedIntervals(fixed), [fixed]);
+  const blocks = useMemo(() => lockedToBlocks(lockedIntervals(fixed)), [fixed]);
   const overlaps = useMemo(() => findOverlaps(fixed), [fixed]);
   const free = useMemo(() => availableMinutes(fixed), [fixed]);
   const sleepIssues = useMemo(() => sleepWarnings(fixed.sleep), [fixed.sleep]);
@@ -192,7 +193,7 @@ export function FixedStep({ fixed, setFixed, onNext }: { fixed: FixedCommitments
             <p className="mt-1 text-xs">That’s allowed, but double-check it’s intended.</p>
           </Alert>
         )}
-        <WeekCalendar locked={locked} />
+        <WeekCalendar blocks={blocks} />
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm text-zinc-600">
             Free for activities: <span className="font-semibold text-zinc-900">{formatHours(free)}</span> per week

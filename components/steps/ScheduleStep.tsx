@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Activity, Day, DAY_LONG, DAYS, FixedCommitments, GeneratedSchedule, Placement } from "@/lib/types";
-import { availableSlots, formatHHMM, formatHours, lockedIntervals, parseHHMM } from "@/lib/time";
-import { summarize } from "@/lib/schedule/validate";
-import { movePlacement } from "@/lib/schedule/move";
+import { useMemo, useState } from "react";
+import { Activity, Day, GeneratedSchedule } from "@/lib/types";
+import { formatHours } from "@/lib/time";
+import { deleteBlock, renameMatching, summarizeBlocks, upsertBlock, WeekBlock } from "@/lib/schedule/week";
+import { newId } from "@/lib/defaults";
 import { buildIcs, mondayOf } from "@/lib/ics";
 import type { GenerateErrorBody } from "@/lib/api";
 import { WeekCalendar } from "../WeekCalendar";
+import { BlockEditor } from "../BlockEditor";
 import { Alert, Button, Card, Field, inputClass } from "../ui";
 
 export type GenState = { status: "idle" } | { status: "loading" } | { status: "error"; error: GenerateErrorBody["error"] };
@@ -18,41 +19,44 @@ const SOURCE_LABEL: Record<GeneratedSchedule["source"], { text: string; classNam
   manual: { text: "Edited by you", className: "bg-blue-50 text-blue-700 border-blue-200" },
 };
 
+type Editing = { block: WeekBlock; isNew: boolean } | null;
+
 export function ScheduleStep({
-  fixed,
   activities,
   schedule,
+  blocks,
   stale,
   gen,
+  canUndo,
+  onUndo,
   onRegenerate,
   onFallback,
-  onPlacementsChange,
+  onBlocksChange,
   onBack,
 }: {
-  fixed: FixedCommitments;
   activities: Activity[];
   schedule: GeneratedSchedule | null;
+  blocks: WeekBlock[];
   stale: boolean;
   gen: GenState;
+  canUndo: boolean;
+  onUndo: () => void;
   onRegenerate: () => void;
   onFallback: () => void;
-  onPlacementsChange: (p: Placement[]) => void;
+  onBlocksChange: (blocks: WeekBlock[]) => void;
   onBack: () => void;
 }) {
-  const locked = useMemo(() => lockedIntervals(fixed), [fixed]);
-  const slots = useMemo(() => availableSlots(fixed), [fixed]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Editing>(null);
+  const summary = useMemo(() => summarizeBlocks(blocks, activities), [blocks, activities]);
 
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 3500);
-    return () => clearTimeout(t);
-  }, [toast]);
+  function openEditor(id: string) {
+    const block = blocks.find((b) => b.id === id);
+    if (block) setEditing({ block, isNew: false });
+  }
 
-  const placements = useMemo(() => schedule?.placements ?? [], [schedule]);
-  const summary = useMemo(() => summarize(placements, activities), [placements, activities]);
-  const selected = placements.find((p) => p.id === selectedId) ?? null;
+  function openNew(day: Day, start: number, end: number) {
+    setEditing({ block: { id: newId("blk"), kind: "activity", title: "", color: "#0891b2", day, start, end }, isNew: true });
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -61,10 +65,15 @@ export function ScheduleStep({
           ← Activities
         </Button>
         <div className="flex flex-wrap gap-2">
+          {schedule && (
+            <Button variant="secondary" onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)">
+              ↶ Undo
+            </Button>
+          )}
           <Button variant="secondary" onClick={onRegenerate} disabled={gen.status === "loading"}>
             {gen.status === "loading" ? "Generating…" : "↻ Regenerate"}
           </Button>
-          {schedule && <ExportButton placements={placements} activities={activities} />}
+          {schedule && <ExportButton blocks={blocks} />}
         </div>
       </div>
 
@@ -120,148 +129,130 @@ export function ScheduleStep({
             )}
           </section>
 
-          <div className="grid gap-4 xl:grid-cols-[1fr_18rem]">
+          <div className="grid gap-4 xl:grid-cols-[1fr_20rem]">
             <div className="flex flex-col gap-2">
               <p className="text-xs text-zinc-500">
-                <span className="hidden md:inline">Drag a session to move it, or click it to pick a new time.</span>
-                <span className="md:hidden">Tap a session to move it.</span> Locked time can’t be used.
+                <span className="hidden md:inline">
+                  The plan is yours to change: drag any block to move it, drag its top or bottom edge to change the start or end, click it to edit, or click
+                  empty time to add an activity. Overlaps are allowed.
+                </span>
+                <span className="md:hidden">Tap any block to edit it, or tap empty time to add an activity. Overlaps are allowed.</span>
               </p>
               <WeekCalendar
-                locked={locked}
-                placements={placements}
-                activities={activities}
-                slots={slots}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                onPlacementsChange={(p) => {
-                  onPlacementsChange(p);
-                  setToast(null);
-                }}
-                onReject={setToast}
+                blocks={blocks}
+                editable
+                selectedId={editing && !editing.isNew ? editing.block.id : null}
+                onSelect={openEditor}
+                onChange={onBlocksChange}
+                onAdd={openNew}
               />
             </div>
 
             <div className="flex flex-col gap-4">
-              {selected && (
-                <MovePanel
-                  key={selected.id}
-                  placement={selected}
-                  activity={activities.find((a) => a.id === selected.activityId)}
-                  onClose={() => setSelectedId(null)}
-                  onMove={(day, start) => {
-                    const res = movePlacement(placements, selected.id, day, start, slots);
-                    if (!res.ok) return res.reason;
-                    onPlacementsChange(res.placements);
-                    setSelectedId(null);
-                    return null;
-                  }}
-                />
+              {editing && (
+                <>
+                  {/* Bottom sheet on small screens, sidebar card on wide screens. */}
+                  <div className="fixed inset-0 z-40 bg-black/20 xl:hidden" onClick={() => setEditing(null)} aria-hidden />
+                  <div className="fixed inset-x-0 bottom-0 z-50 max-h-[85vh] overflow-y-auto rounded-t-2xl border-t border-zinc-200 bg-white p-4 shadow-2xl xl:static xl:max-h-none xl:rounded-xl xl:border xl:p-5 xl:shadow-none">
+                    <BlockEditor
+                      key={editing.block.id}
+                      initial={editing.block}
+                      isNew={editing.isNew}
+                      blocks={blocks}
+                      activities={activities}
+                      onClose={() => setEditing(null)}
+                      onDelete={
+                        editing.isNew
+                          ? undefined
+                          : () => {
+                              onBlocksChange(deleteBlock(blocks, editing.block.id));
+                              setEditing(null);
+                            }
+                      }
+                      onSave={(block, renameAll) => {
+                        let next = upsertBlock(blocks, block);
+                        if (renameAll) next = renameMatching(upsertBlock(blocks, { ...block, title: editing.block.title }), block.id, block.title);
+                        onBlocksChange(next);
+                        setEditing(null);
+                      }}
+                    />
+                  </div>
+                </>
               )}
+
               <Card title="Hours per activity">
                 <ul className="flex flex-col gap-3">
-                  {summary.map((s) => (
-                    <li key={s.activityId}>
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="flex items-center gap-2 font-medium">
-                          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: s.color }} />
-                          {s.name}
-                        </span>
-                        <span className={s.onTarget ? "text-zinc-600" : "font-medium text-red-600"}>
-                          {formatHours(s.scheduledMinutes)} / {formatHours(s.targetMinutes)}
-                        </span>
-                      </div>
-                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-zinc-100">
-                        <div
-                          className="h-full rounded-full"
-                          style={{ width: `${Math.min(100, (s.scheduledMinutes / s.targetMinutes) * 100)}%`, backgroundColor: s.color }}
-                        />
-                      </div>
-                      <p className="mt-0.5 text-xs text-zinc-400">
-                        {s.sessions} session{s.sessions === 1 ? "" : "s"}
-                      </p>
-                    </li>
-                  ))}
+                  {summary.targets.map((s) => {
+                    const onTarget = Math.abs(s.scheduledMinutes - s.targetMinutes) <= 30;
+                    return (
+                      <li key={s.activityId}>
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="flex items-center gap-2 font-medium">
+                            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: s.color }} />
+                            {s.name}
+                          </span>
+                          <span className={onTarget ? "text-zinc-600" : "font-medium text-amber-700"}>
+                            {formatHours(s.scheduledMinutes)} / {formatHours(s.targetMinutes)}
+                          </span>
+                        </div>
+                        <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-zinc-100">
+                          <div
+                            className="h-full rounded-full"
+                            style={{ width: `${Math.min(100, (s.scheduledMinutes / s.targetMinutes) * 100)}%`, backgroundColor: s.color }}
+                          />
+                        </div>
+                        <p className="mt-0.5 text-xs text-zinc-400">
+                          {s.sessions} session{s.sessions === 1 ? "" : "s"}
+                        </p>
+                      </li>
+                    );
+                  })}
                 </ul>
+                {summary.extras.length > 0 && (
+                  <>
+                    <h3 className="mt-4 mb-2 text-xs font-semibold tracking-wide text-zinc-500 uppercase">Added by you</h3>
+                    <ul className="flex flex-col gap-1.5">
+                      {summary.extras.map((x) => (
+                        <li key={x.title} className="flex items-center justify-between text-sm">
+                          <span className="flex items-center gap-2">
+                            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: x.color }} />
+                            {x.title}
+                          </span>
+                          <span className="text-zinc-600">
+                            {formatHours(x.minutes)} · {x.sessions}×
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
               </Card>
             </div>
           </div>
         </>
       )}
-
-      {toast && (
-        <div role="status" className="fixed inset-x-4 bottom-4 z-50 mx-auto max-w-md rounded-lg bg-zinc-900 px-4 py-3 text-sm text-white shadow-lg">
-          {toast}
-        </div>
-      )}
     </div>
   );
 }
 
-function MovePanel({
-  placement,
-  activity,
-  onMove,
-  onClose,
-}: {
-  placement: Placement;
-  activity?: Activity;
-  onMove: (day: Day, start: number) => string | null;
-  onClose: () => void;
-}) {
-  const [day, setDay] = useState<Day>(placement.day);
-  const [start, setStart] = useState(formatHHMM(placement.start));
-  const [error, setError] = useState<string | null>(null);
-  const len = placement.end - placement.start;
-
-  return (
-    <Card title={`Move ${activity?.name ?? "session"}`} description={`${formatHours(len)} session`}>
-      <div className="flex flex-col gap-3">
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Day">
-            <select className={inputClass} value={day} onChange={(e) => setDay(Number(e.target.value) as Day)}>
-              {DAYS.map((d) => (
-                <option key={d} value={d}>
-                  {DAY_LONG[d]}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Start">
-            <input type="time" step={900} className={inputClass} value={start} onChange={(e) => setStart(e.target.value)} />
-          </Field>
-        </div>
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        <div className="flex gap-2">
-          <Button
-            onClick={() => {
-              if (!start) return setError("Pick a start time.");
-              setError(onMove(day, parseHHMM(start)));
-            }}
-          >
-            Move
-          </Button>
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-function ExportButton({ placements, activities }: { placements: Placement[]; activities: Activity[] }) {
+function ExportButton({ blocks }: { blocks: WeekBlock[] }) {
   const [open, setOpen] = useState(false);
   const [week, setWeek] = useState<"this" | "next">("next");
   const [repeat, setRepeat] = useState(1);
+  const [includeFixed, setIncludeFixed] = useState(false);
   const thisMonday = mondayOf(new Date());
-  const weekStart = new Date(thisMonday.getFullYear(), thisMonday.getMonth(), thisMonday.getDate() + (week === "next" ? 7 : 0));
+  const nextMonday = new Date(thisMonday.getFullYear(), thisMonday.getMonth(), thisMonday.getDate() + 7);
+  const weekStart = week === "next" ? nextMonday : thisMonday;
 
   function download() {
-    const ics = buildIcs(placements, activities, { weekStart, repeatWeeks: repeat });
+    const events = blocks
+      .filter((b) => b.kind === "activity" || (includeFixed && (b.kind === "event" || b.kind === "free")))
+      .map((b) => ({ uid: b.id, title: b.title, day: b.day, start: b.start, end: b.end }));
+    const ics = buildIcs(events, { weekStart, repeatWeeks: repeat });
     const url = URL.createObjectURL(new Blob([ics], { type: "text/calendar;charset=utf-8" }));
     const a = document.createElement("a");
     a.href = url;
-    a.download = `weekly-plan-${weekStart.toISOString().slice(0, 10)}.ics`;
+    a.download = `weekly-plan-${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, "0")}-${String(weekStart.getDate()).padStart(2, "0")}.ics`;
     a.click();
     URL.revokeObjectURL(url);
     setOpen(false);
@@ -280,7 +271,7 @@ function ExportButton({ placements, activities }: { placements: Placement[]; act
             <Field label="Week">
               <select className={inputClass} value={week} onChange={(e) => setWeek(e.target.value as "this" | "next")}>
                 <option value="this">This week (from {fmt(thisMonday)})</option>
-                <option value="next">Next week (from {fmt(new Date(thisMonday.getFullYear(), thisMonday.getMonth(), thisMonday.getDate() + 7))})</option>
+                <option value="next">Next week (from {fmt(nextMonday)})</option>
               </select>
             </Field>
             <Field label="Repeat">
@@ -290,6 +281,10 @@ function ExportButton({ placements, activities }: { placements: Placement[]; act
                 <option value={12}>12 weeks</option>
               </select>
             </Field>
+            <label className="flex items-center gap-2 text-sm text-zinc-700">
+              <input type="checkbox" className="h-4 w-4 accent-zinc-900" checked={includeFixed} onChange={(e) => setIncludeFixed(e.target.checked)} />
+              Also export fixed events and free time
+            </label>
             <p className="text-xs text-zinc-500">Import into Google Calendar (Settings → Import) or open with Apple Calendar.</p>
             <Button onClick={download}>Download</Button>
           </div>

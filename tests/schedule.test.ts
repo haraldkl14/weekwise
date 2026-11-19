@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { availableSlots } from "@/lib/time";
-import { validateSchedule, summarize } from "@/lib/schedule/validate";
+import { validateSchedule } from "@/lib/schedule/validate";
 import { greedySchedule } from "@/lib/schedule/greedy";
 import { generateSchedule, PlanningInputError, inputProblems } from "@/lib/schedule/generate";
 import { convertRawPlacements } from "@/lib/schedule/convert";
@@ -57,10 +57,6 @@ describe("validateSchedule", () => {
     expect(validateSchedule(short, [gym], SLOTS).valid).toBe(false);
   });
 
-  it("summarizes scheduled vs target", () => {
-    const s = summarize([p("gym", 0, "18:00", "19:30")], [gym]);
-    expect(s[0]).toMatchObject({ scheduledMinutes: 90, targetMinutes: 180, onTarget: false, sessions: 1 });
-  });
 });
 
 describe("greedySchedule", () => {

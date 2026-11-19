@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Activity, FixedCommitments, GeneratedSchedule, Placement } from "@/lib/types";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Activity, FixedCommitments, GeneratedSchedule } from "@/lib/types";
 import { capacity, planSessions } from "@/lib/time";
 import { defaultFixed, exampleData } from "@/lib/defaults";
 import { deterministicSchedule, PlanningInputError } from "@/lib/schedule/generate";
 import { requestSchedule } from "@/lib/api";
+import { buildWeek, WeekBlock } from "@/lib/schedule/week";
 import { usePersistentState } from "@/hooks/usePersistentState";
 import { Stepper } from "./Stepper";
 import { FixedStep } from "./steps/FixedStep";
@@ -15,6 +16,8 @@ import { Button } from "./ui";
 
 interface StoredSchedule {
   schedule: GeneratedSchedule;
+  /** The editable week. Missing in data saved by older versions. */
+  blocks?: WeekBlock[];
   /** Snapshot key of the inputs the schedule was built from. */
   basedOn: string;
 }
@@ -31,51 +34,77 @@ export default function Planner() {
   const [stored, setStored] = usePersistentState<StoredSchedule | null>(`${KEY}:schedule`, () => null);
   const [step, setStep] = usePersistentState<number>(`${KEY}:step`, () => 1);
   const [gen, setGen] = useState<GenState>({ status: "idle" });
+  /** Undo stack of previous block states (in memory only). */
+  const [history, setHistory] = useState<WeekBlock[][]>([]);
 
   const key = inputsKey(fixed, activities);
   const canGenerate = useMemo(
     () => capacity(fixed, activities).canGenerate && activities.every((a) => !planSessions(a).problem),
     [fixed, activities],
   );
-  // Drop sessions whose activity was deleted since the schedule was made.
-  const schedule = useMemo(() => {
-    if (!stored) return null;
-    const ids = new Set(activities.map((a) => a.id));
-    return { ...stored.schedule, placements: stored.schedule.placements.filter((p) => ids.has(p.activityId)) };
-  }, [stored, activities]);
+  const schedule = stored?.schedule ?? null;
+  const blocks = useMemo(
+    () => (stored ? (stored.blocks ?? buildWeek(fixed, activities, stored.schedule.placements)) : []),
+    [stored, fixed, activities],
+  );
+
+  function save(newSchedule: GeneratedSchedule) {
+    setStored({ schedule: newSchedule, blocks: buildWeek(fixed, activities, newSchedule.placements), basedOn: key });
+    setHistory([]);
+    setGen({ status: "idle" });
+  }
 
   async function generate() {
+    if (stored?.schedule.source === "manual" && !window.confirm("Generating a new schedule replaces the changes you made. Continue?")) return;
     setStep(3);
     setGen({ status: "loading" });
     const res = await requestSchedule(fixed, activities);
-    if (res.ok) {
-      setStored({ schedule: res.schedule, basedOn: key });
-      setGen({ status: "idle" });
-    } else {
-      setGen({ status: "error", error: res.error });
-    }
+    if (res.ok) save(res.schedule);
+    else setGen({ status: "error", error: res.error });
   }
 
   function fallback() {
     try {
-      setStored({ schedule: deterministicSchedule(fixed, activities), basedOn: key });
-      setGen({ status: "idle" });
+      save(deterministicSchedule(fixed, activities));
     } catch (e) {
       const problems = e instanceof PlanningInputError ? e.problems : ["Unexpected error."];
       setGen({ status: "error", error: { code: "invalid_input", message: problems[0], problems } });
     }
   }
 
-  function updatePlacements(placements: Placement[]) {
+  function changeBlocks(next: WeekBlock[]) {
     if (!stored) return;
-    setStored({ ...stored, schedule: { ...stored.schedule, placements, source: "manual" } });
+    setHistory((h) => [...h.slice(-49), blocks]);
+    setStored({ ...stored, blocks: next, schedule: { ...stored.schedule, source: "manual" } });
   }
+
+  const undo = useCallback(() => {
+    if (!stored || history.length === 0) return;
+    setStored({ ...stored, blocks: history[history.length - 1] });
+    setHistory(history.slice(0, -1));
+  }, [stored, history, setStored]);
+
+  // Ctrl/Cmd+Z on the schedule step (but not while typing in a field).
+  useEffect(() => {
+    if (step !== 3) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        undo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [step, undo]);
 
   function loadExample() {
     const ex = exampleData();
     setFixed(ex.fixed);
     setActivities(ex.activities);
     setStored(null);
+    setHistory([]);
     setStep(1);
   }
 
@@ -117,14 +146,16 @@ export default function Planner() {
       {step === 3 &&
         (schedule || gen.status !== "idle" ? (
           <ScheduleStep
-            fixed={fixed}
             activities={activities}
             schedule={schedule}
+            blocks={blocks}
             stale={Boolean(stored && stored.basedOn !== key)}
             gen={gen}
             onRegenerate={generate}
             onFallback={fallback}
-            onPlacementsChange={updatePlacements}
+            onBlocksChange={changeBlocks}
+            canUndo={history.length > 0}
+            onUndo={undo}
             onBack={() => setStep(2)}
           />
         ) : (

@@ -1,188 +1,234 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Day, DAY_LONG, DAY_SHORT, DAYS, LockedInterval, Placement } from "@/lib/types";
-import { DaySlot, formatHHMM, splitByDay } from "@/lib/time";
-import { movePlacement } from "@/lib/schedule/move";
+import { Day, DAY_LONG, DAY_SHORT, DAYS } from "@/lib/types";
+import { formatHHMM } from "@/lib/time";
+import { BlockKind, gapAt, layoutDay, moveBlock, newBlockRange, resizeBlock, WeekBlock } from "@/lib/schedule/week";
 
 const PX_PER_MIN = 44 / 60; // 44px per hour
 const DAY_HEIGHT = 1440 * PX_PER_MIN;
 const HOURS = Array.from({ length: 24 }, (_, h) => h);
+const EDGE_PX = 7; // grab zone for resizing
+const DRAG_THRESHOLD_PX = 4;
 
-const LOCKED_STYLE: Record<LockedInterval["kind"], string> = {
-  sleep: "bg-zinc-200/80 text-zinc-500",
-  event: "bg-zinc-400/80 text-white",
-  free: "bg-zinc-300/80 text-zinc-700 bg-[repeating-linear-gradient(45deg,transparent,transparent_6px,rgba(255,255,255,.35)_6px,rgba(255,255,255,.35)_12px)]",
+const FIXED_STYLE: Record<Exclude<BlockKind, "activity">, string> = {
+  sleep: "bg-zinc-200 text-zinc-500",
+  event: "bg-zinc-400 text-white",
+  free: "bg-zinc-300 text-zinc-700 bg-[repeating-linear-gradient(45deg,transparent,transparent_6px,rgba(255,255,255,.35)_6px,rgba(255,255,255,.35)_12px)]",
 };
 
-interface LockedPiece {
-  key: string;
-  day: Day;
-  start: number;
-  end: number;
-  kind: LockedInterval["kind"];
-  label: string;
-}
+type DragMode = "move" | "start" | "end";
 
-interface DragState {
+interface DragSession {
   id: string;
-  len: number;
-  /** Minutes between the block's top and the pointer when the drag started. */
-  grabOffset: number;
-}
-
-interface Preview {
-  day: Day;
-  start: number;
-  end: number;
-  ok: boolean;
+  mode: DragMode;
+  originX: number;
+  originY: number;
+  orig: WeekBlock;
+  moved: boolean;
 }
 
 export interface WeekCalendarProps {
-  locked: LockedInterval[];
-  placements?: Placement[];
-  activities?: Activity[];
-  /** Free slots; required for drag & drop. */
-  slots?: DaySlot[];
-  onPlacementsChange?: (next: Placement[]) => void;
-  onReject?: (reason: string) => void;
-  onSelect?: (id: string) => void;
+  blocks: WeekBlock[];
+  /** Enables drag, resize, click-to-edit and click-to-add. */
+  editable?: boolean;
   selectedId?: string | null;
+  onSelect?: (id: string) => void;
+  onChange?: (blocks: WeekBlock[]) => void;
+  onAdd?: (day: Day, start: number, end: number) => void;
 }
 
-export function WeekCalendar(props: WeekCalendarProps) {
-  const { locked, placements = [], activities = [] } = props;
+export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, onChange, onAdd }: WeekCalendarProps) {
   const [mobileDay, setMobileDay] = useState<Day>(() => (((new Date().getDay() + 6) % 7) as Day));
-  const [preview, setPreview] = useState<Preview | null>(null);
-  const drag = useRef<DragState | null>(null);
+  /** Blocks as they look mid-drag; null when not dragging. */
+  const [preview, setPreview] = useState<WeekBlock[] | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
-  const scrollRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const [hover, setHover] = useState<{ day: Day; start: number; end: number } | null>(null);
 
-  const pieces = useMemo<LockedPiece[]>(
-    () =>
-      locked.flatMap((l, i) =>
-        splitByDay([l]).map((p, j) => ({ key: `${l.sourceId}-${i}-${j}`, day: p.day, start: p.start, end: p.end, kind: l.kind, label: l.label })),
-      ),
-    [locked],
-  );
-  const activityById = useMemo(() => new Map(activities.map((a) => [a.id, a])), [activities]);
-  const draggable = Boolean(props.slots && props.onPlacementsChange);
+  const session = useRef<DragSession | null>(null);
+  const suppressClick = useRef(false);
+  const columns = useRef(new Map<string, { day: Day; el: HTMLDivElement }>());
+  const scrollRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const blocksRef = useRef(blocks);
+  const onChangeRef = useRef(onChange);
+  useEffect(() => {
+    blocksRef.current = blocks;
+    onChangeRef.current = onChange;
+  });
+
+  const shown = preview ?? blocks;
+  const byDay = useMemo(() => {
+    const m = new Map<Day, { blocks: WeekBlock[]; layout: ReturnType<typeof layoutDay> }>();
+    for (const d of DAYS) {
+      const dayBlocks = shown.filter((b) => b.day === d);
+      m.set(d, { blocks: dayBlocks, layout: layoutDay(dayBlocks) });
+    }
+    return m;
+  }, [shown]);
 
   // Start scrolled to 06:00.
   useEffect(() => {
     for (const el of scrollRefs.current) if (el) el.scrollTop = 6 * 60 * PX_PER_MIN - 8;
   }, []);
 
-  function minuteAt(e: React.DragEvent, column: HTMLElement): number {
-    const rect = column.getBoundingClientRect();
-    return (e.clientY - rect.top) / PX_PER_MIN - (drag.current?.grabOffset ?? 0);
-  }
-
-  function handleDragOver(e: React.DragEvent<HTMLDivElement>, day: Day) {
-    if (!drag.current || !props.slots) return;
-    e.preventDefault();
-    const res = movePlacement(placements, drag.current.id, day, minuteAt(e, e.currentTarget), props.slots);
-    const moved = res.ok ? res.placements.find((p) => p.id === drag.current!.id)! : null;
-    const start = moved ? moved.start : Math.max(0, Math.min(1440 - drag.current.len, Math.round(minuteAt(e, e.currentTarget) / 15) * 15));
-    // Always "move": with "none" the browser skips the drop event and we could not explain the rejection.
-    e.dataTransfer.dropEffect = "move";
-    if (!preview || preview.day !== day || preview.start !== start || preview.ok !== res.ok) {
-      setPreview({ day, start, end: start + drag.current.len, ok: res.ok });
+  function dayUnder(clientX: number): Day | null {
+    for (const { day, el } of columns.current.values()) {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && clientX >= r.left && clientX < r.right) return day;
     }
+    return null;
   }
 
-  function handleDrop(e: React.DragEvent<HTMLDivElement>, day: Day) {
+  function apply(s: DragSession, clientX: number, clientY: number): WeekBlock[] {
+    const delta = (clientY - s.originY) / PX_PER_MIN;
+    const base = blocksRef.current;
+    if (s.mode === "end") return resizeBlock(base, s.id, "end", s.orig.end + delta);
+    if (s.mode === "start") return resizeBlock(base, s.id, "start", s.orig.start + delta);
+    return moveBlock(base, s.id, dayUnder(clientX) ?? s.orig.day, s.orig.start + delta);
+  }
+
+  function startDrag(e: React.PointerEvent<HTMLDivElement>, block: WeekBlock) {
+    // Touch keeps native scrolling; on touch devices blocks are edited by tapping.
+    if (!editable || e.button !== 0 || e.pointerType === "touch") return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    const mode: DragMode = rect.height > EDGE_PX * 3 && y < EDGE_PX ? "start" : y > rect.height - EDGE_PX ? "end" : "move";
     e.preventDefault();
-    const d = drag.current;
-    drag.current = null;
-    setDraggingId(null);
-    setPreview(null);
-    if (!d || !props.slots || !props.onPlacementsChange) return;
-    const res = movePlacement(placements, d.id, day, minuteAt(e, e.currentTarget), props.slots);
-    if (res.ok) props.onPlacementsChange(res.placements);
-    else props.onReject?.(res.reason);
+    session.current = { id: block.id, mode, originX: e.clientX, originY: e.clientY, orig: block, moved: false };
+    setHover(null);
+
+    const onMove = (ev: PointerEvent) => {
+      const s = session.current;
+      if (!s) return;
+      if (!s.moved && Math.hypot(ev.clientX - s.originX, ev.clientY - s.originY) < DRAG_THRESHOLD_PX) return;
+      s.moved = true;
+      setDraggingId(s.id);
+      setPreview(apply(s, ev.clientX, ev.clientY));
+    };
+    const onUp = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      const s = session.current;
+      session.current = null;
+      setPreview(null);
+      setDraggingId(null);
+      if (s?.moved) {
+        // The click event that follows this pointerup isn't a real click.
+        suppressClick.current = true;
+        setTimeout(() => (suppressClick.current = false), 0);
+        onChangeRef.current?.(apply(s, ev.clientX, ev.clientY));
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   }
 
-  function renderColumn(day: Day) {
+  function minuteAt(clientY: number, el: HTMLElement) {
+    return Math.max(0, Math.min(1439, (clientY - el.getBoundingClientRect().top) / PX_PER_MIN));
+  }
+
+  function renderColumn(day: Day, view: "desk" | "mob") {
+    const { blocks: dayBlocks, layout } = byDay.get(day)!;
     return (
       <div
-        className="relative border-l border-zinc-200"
+        ref={(el) => {
+          const key = `${view}-${day}`;
+          if (el) columns.current.set(key, { day, el });
+          else columns.current.delete(key);
+        }}
+        className={`relative border-l border-zinc-200 ${editable ? "cursor-cell" : ""}`}
         style={{ height: DAY_HEIGHT }}
-        onDragOver={draggable ? (e) => handleDragOver(e, day) : undefined}
-        onDragLeave={draggable ? () => setPreview(null) : undefined}
-        onDrop={draggable ? (e) => handleDrop(e, day) : undefined}
+        onPointerMove={
+          editable
+            ? (e) => {
+                if (session.current || e.pointerType === "touch") return;
+                const minute = minuteAt(e.clientY, e.currentTarget);
+                const range = gapAt(blocks, day, minute) ? newBlockRange(blocks, day, minute) : null;
+                if (!range) return setHover(null);
+                if (!hover || hover.day !== day || hover.start !== range.start) setHover({ day, ...range });
+              }
+            : undefined
+        }
+        onPointerLeave={editable ? () => setHover(null) : undefined}
+        onClick={
+          editable
+            ? (e) => {
+                if (suppressClick.current) return void (suppressClick.current = false);
+                const minute = minuteAt(e.clientY, e.currentTarget);
+                if (!gapAt(blocks, day, minute)) return;
+                const range = newBlockRange(blocks, day, minute);
+                onAdd?.(day, range.start, range.end);
+              }
+            : undefined
+        }
       >
         {HOURS.map((h) => (
-          <div key={h} className="absolute inset-x-0 border-t border-zinc-100" style={{ top: h * 60 * PX_PER_MIN }}>
+          <div key={h} className="pointer-events-none absolute inset-x-0 border-t border-zinc-100" style={{ top: h * 60 * PX_PER_MIN }}>
             <div className="border-t border-dashed border-zinc-50" style={{ marginTop: 30 * PX_PER_MIN - 1 }} />
           </div>
         ))}
 
-        {pieces
-          .filter((p) => p.day === day)
-          .map((p) => (
-            <div
-              key={p.key}
-              title={`${p.label} ${formatHHMM(p.start)}–${formatHHMM(p.end)} (locked)`}
-              className={`pointer-events-none absolute inset-x-0.5 overflow-hidden rounded px-1.5 py-0.5 text-[11px] leading-tight ${LOCKED_STYLE[p.kind]}`}
-              style={{ top: p.start * PX_PER_MIN, height: Math.max(2, (p.end - p.start) * PX_PER_MIN - 1) }}
-            >
-              {p.end - p.start >= 30 && <span className="font-medium">{p.label}</span>}
-            </div>
-          ))}
-
-        {placements
-          .filter((p) => p.day === day)
-          .map((p) => {
-            const a = activityById.get(p.activityId);
-            const short = p.end - p.start < 45;
-            const dragging = draggingId === p.id;
-            return (
-              <button
-                type="button"
-                key={p.id}
-                draggable={draggable}
-                onDragStart={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  drag.current = { id: p.id, len: p.end - p.start, grabOffset: (e.clientY - rect.top) / PX_PER_MIN };
-                  e.dataTransfer.effectAllowed = "move";
-                  e.dataTransfer.setData("text/plain", p.id);
-                  setDraggingId(p.id);
-                }}
-                onDragEnd={() => {
-                  drag.current = null;
-                  setDraggingId(null);
-                  setPreview(null);
-                }}
-                onClick={() => props.onSelect?.(p.id)}
-                title={`${a?.name ?? "?"} ${formatHHMM(p.start)}–${formatHHMM(p.end)}${draggable ? " — drag to move" : ""}`}
-                className={`absolute inset-x-1 z-10 overflow-hidden rounded-md px-1.5 py-0.5 text-left text-[11px] leading-tight text-white shadow-sm ring-offset-1 transition ${
-                  draggable ? "cursor-grab active:cursor-grabbing" : ""
-                } ${props.selectedId === p.id ? "ring-2 ring-zinc-900" : ""} ${dragging ? "opacity-40" : ""}`}
-                style={{ top: p.start * PX_PER_MIN, height: (p.end - p.start) * PX_PER_MIN - 1, backgroundColor: a?.color ?? "#71717a" }}
-              >
-                <span className="font-semibold">{a?.name ?? "Unknown"}</span>
-                {!short && (
-                  <span className="block opacity-90">
-                    {formatHHMM(p.start)}–{formatHHMM(p.end)}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-
-        {preview && preview.day === day && (
+        {hover && hover.day === day && (
           <div
-            className={`pointer-events-none absolute inset-x-1 z-20 rounded-md border-2 border-dashed ${
-              preview.ok ? "border-emerald-500 bg-emerald-500/15" : "border-red-500 bg-red-500/15"
-            }`}
-            style={{ top: preview.start * PX_PER_MIN, height: (preview.end - preview.start) * PX_PER_MIN }}
+            className="pointer-events-none absolute inset-x-1 z-0 flex items-start rounded-md border border-dashed border-zinc-400 bg-zinc-50 px-1.5 py-0.5 text-[11px] font-medium text-zinc-500"
+            style={{ top: hover.start * PX_PER_MIN, height: (hover.end - hover.start) * PX_PER_MIN - 1 }}
           >
-            <span className={`ml-1 text-[11px] font-medium ${preview.ok ? "text-emerald-700" : "text-red-700"}`}>
-              {formatHHMM(preview.start)} {preview.ok ? "" : "– blocked"}
-            </span>
+            + Add activity
           </div>
         )}
+
+        {dayBlocks.map((b) => {
+          const { col, cols } = layout.get(b.id) ?? { col: 0, cols: 1 };
+          const len = b.end - b.start;
+          const isActivity = b.kind === "activity";
+          const style = b.kind === "activity" ? "text-white shadow-sm" : FIXED_STYLE[b.kind];
+          const interactive = editable;
+          return (
+            <div
+              key={b.id}
+              role={interactive ? "button" : undefined}
+              tabIndex={interactive ? 0 : undefined}
+              aria-label={`${b.title} ${DAY_LONG[b.day]} ${formatHHMM(b.start)} to ${formatHHMM(b.end)}`}
+              title={`${b.title} ${formatHHMM(b.start)}–${formatHHMM(b.end)}${interactive ? " · drag to move, drag the top/bottom edge to resize, click to edit" : ""}`}
+              onPointerDown={interactive ? (e) => startDrag(e, b) : undefined}
+              onClick={
+                interactive
+                  ? (e) => {
+                      e.stopPropagation();
+                      if (suppressClick.current) return void (suppressClick.current = false);
+                      onSelect?.(b.id);
+                    }
+                  : undefined
+              }
+              onKeyDown={interactive ? (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onSelect?.(b.id)) : undefined}
+              className={`group absolute overflow-hidden rounded-md px-1.5 py-0.5 text-[11px] leading-tight ${style} ${
+                interactive ? "cursor-grab select-none outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 active:cursor-grabbing" : "pointer-events-none"
+              } ${selectedId === b.id ? "ring-2 ring-zinc-900 ring-offset-1" : ""} ${draggingId === b.id ? "z-30 opacity-90 shadow-lg" : isActivity ? "z-20" : "z-10"}`}
+              style={{
+                top: b.start * PX_PER_MIN,
+                height: Math.max(2, len * PX_PER_MIN - 1),
+                left: `calc(${(col / cols) * 100}% + 2px)`,
+                width: `calc(${100 / cols}% - 4px)`,
+                backgroundColor: isActivity ? (b.color ?? "#71717a") : undefined,
+              }}
+            >
+              {interactive && (
+                <>
+                  <span className="absolute inset-x-0 top-0 h-[7px] cursor-ns-resize" aria-hidden />
+                  <span className="absolute inset-x-0 bottom-0 flex h-[7px] cursor-ns-resize justify-center" aria-hidden>
+                    <span className="mt-[3px] hidden h-[2px] w-6 rounded bg-white/70 group-hover:block" />
+                  </span>
+                </>
+              )}
+              {len >= 30 && <span className={isActivity ? "font-semibold" : "font-medium"}>{b.title}</span>}
+              {len >= 45 && (
+                <span className="block opacity-90">
+                  {formatHHMM(b.start)}–{formatHHMM(b.end)}
+                </span>
+              )}
+            </div>
+          );
+        })}
       </div>
     );
   }
@@ -213,7 +259,7 @@ export function WeekCalendar(props: WeekCalendarProps) {
           <div className="grid grid-cols-[3rem_repeat(7,minmax(0,1fr))]">
             {gutter}
             {DAYS.map((d) => (
-              <div key={d}>{renderColumn(d)}</div>
+              <div key={d}>{renderColumn(d, "desk")}</div>
             ))}
           </div>
         </div>
@@ -238,7 +284,7 @@ export function WeekCalendar(props: WeekCalendarProps) {
         <div ref={(el) => void (scrollRefs.current[1] = el)} className="max-h-[60vh] overflow-y-auto">
           <div className="grid grid-cols-[3rem_1fr]">
             {gutter}
-            {renderColumn(mobileDay)}
+            {renderColumn(mobileDay, "mob")}
           </div>
         </div>
       </div>
@@ -258,7 +304,7 @@ function Legend() {
         <span className="h-3 w-3 rounded-sm bg-zinc-400" /> Fixed event
       </span>
       <span className="flex items-center gap-1">
-        <span className={`h-3 w-3 rounded-sm ${LOCKED_STYLE.free}`} /> Protected free time
+        <span className={`h-3 w-3 rounded-sm ${FIXED_STYLE.free}`} /> Protected free time
       </span>
     </div>
   );

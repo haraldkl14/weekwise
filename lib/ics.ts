@@ -1,4 +1,14 @@
-import { Activity, Placement } from "./types";
+import { Day } from "./types";
+
+export interface IcsEvent {
+  uid: string;
+  title: string;
+  description?: string;
+  day: Day;
+  /** Minutes from midnight; end may be 1440. */
+  start: number;
+  end: number;
+}
 
 export interface IcsOptions {
   /** Monday of the week to export (local date). */
@@ -26,7 +36,7 @@ function utcStamp(d: Date): string {
 
 /** RFC 5545 text escaping. */
 export function escapeText(s: string): string {
-  return s.replace(/\\/g, "\\\\").replace(/;/g, "\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+  return s.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
 }
 
 const octets = (s: string) => new TextEncoder().encode(s).length;
@@ -51,23 +61,20 @@ export function mondayOf(date: Date): Date {
   return d;
 }
 
-export function buildIcs(placements: Placement[], activities: Activity[], opts: IcsOptions): string {
-  const byId = new Map(activities.map((a) => [a.id, a]));
+export function buildIcs(events: IcsEvent[], opts: IcsOptions): string {
   const stamp = utcStamp(opts.now ?? new Date());
   const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Weekly Planner//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH"];
-  for (const p of placements) {
-    const a = byId.get(p.activityId);
-    if (!a) continue;
-    const day = new Date(opts.weekStart.getFullYear(), opts.weekStart.getMonth(), opts.weekStart.getDate() + p.day);
+  for (const e of events) {
+    const day = new Date(opts.weekStart.getFullYear(), opts.weekStart.getMonth(), opts.weekStart.getDate() + e.day);
     lines.push(
       "BEGIN:VEVENT",
-      `UID:${p.id}-${localStamp(day, p.start)}@weekly-planner`,
+      `UID:${e.uid}-${localStamp(day, e.start)}@weekly-planner`,
       `DTSTAMP:${stamp}`,
-      `DTSTART:${localStamp(day, p.start)}`,
-      `DTEND:${localStamp(day, p.end)}`,
-      `SUMMARY:${escapeText(a.name)}`,
+      `DTSTART:${localStamp(day, e.start)}`,
+      `DTEND:${localStamp(day, e.end)}`,
+      `SUMMARY:${escapeText(e.title)}`,
     );
-    if (a.notes.trim()) lines.push(`DESCRIPTION:${escapeText(a.notes.trim())}`);
+    if (e.description?.trim()) lines.push(`DESCRIPTION:${escapeText(e.description.trim())}`);
     if (opts.repeatWeeks && opts.repeatWeeks > 1) lines.push(`RRULE:FREQ=WEEKLY;COUNT=${opts.repeatWeeks}`);
     lines.push("END:VEVENT");
   }

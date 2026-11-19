@@ -54,7 +54,7 @@ lib/
     validate.ts            validates any placement set (AI or manual)
     greedy.ts              deterministic fallback scheduler
     generate.ts            orchestration: AI → validate → retry ×2 → greedy
-    move.ts                drag & drop move validation
+    week.ts                editable week after generation: blocks, move/resize/rename/add, overlap layout
   ai/
     scheduler.ts           provider-agnostic interface (AiScheduler)
     gemini.ts              Gemini implementation (server-only)
@@ -83,3 +83,6 @@ tests/                     Vitest
 * API errors (rate limit, quota, bad key) are **not** silently replaced by the
   greedy result: the user sees the reason and chooses the fallback. Validation
   failures after 2 retries **are** replaced automatically, as specified.
+* After generation the schedule becomes a list of `WeekBlock`s (sleep, events,
+  free time and activities alike). Manual edits are unrestricted: the
+  generation rules apply to the AI/greedy output, not to what the user does.

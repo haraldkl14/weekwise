@@ -4,7 +4,8 @@ Generates a personalised weekly schedule around your fixed commitments.
 
 1. **Fixed**: sleep (handles crossing midnight and separate weekend times), recurring events, protected free time. Shown live on a Mon–Sun calendar, with a warning when blocks overlap.
 2. **Activities**: hours per week, min/max session length, preferred time of day, color, notes. Generation is blocked if you request more hours than you have free.
-3. **Schedule**: Gemini proposes a schedule, the code validates it, and the AI gets up to 2 corrective retries before a deterministic planner takes over. You can drag sessions around, see hours per activity and export to `.ics`.
+3. **Schedule**: Gemini proposes a schedule, the code validates it, and the AI gets up to 2 corrective retries before a deterministic planner takes over.
+4. **Your edits**: once generated, the week is fully yours. Every block (activities, fixed events, free time, sleep) can be dragged anywhere (overlaps are allowed and shown side by side), resized from its top or bottom edge, renamed (optionally all blocks with the same name), retimed, or deleted. Click empty time to add an activity, either one-off or counting toward a Step 2 activity. Undo with the button or Ctrl+Z. Export to `.ics`, optionally including fixed events.
 
 ## Setup
 
@@ -59,6 +60,8 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the data model.
 * **The rate limiter is in-memory.** It works for a single `next start` process. On serverless or multi-instance hosting (e.g. Vercel) each instance counts separately and the limit leaks. Use Redis/Upstash before relying on it for cost control. Also, one "generation" can be up to 3 Gemini calls (1 + 2 retries).
 * `x-forwarded-for` is trusted for the client IP. That's fine behind a proxy that sets it, but a client can spoof it if the app is exposed directly.
 * `Available hours ≥ requested hours` doesn't guarantee a fit: free gaps can be too short for your minimum session length. When that happens the planner reports the shortfall per activity instead of breaking a rule.
-* Drag & drop uses HTML5 DnD (desktop). On touch devices, tap a session to move it with the day/time picker.
+* Dragging and resizing work with a mouse or pen. On touch devices, tap a block to edit its day and times (dragging would fight with scrolling).
+* Edits in step 3 change this plan only. Shortening School there changes that one day; to change it every week, edit step 1 and regenerate. Regenerating replaces manual edits (you're asked first).
+* The undo history lives in memory and is cleared on reload; the edited plan itself is saved.
 * `.ics` events use floating local times (no time zone), so calendars show them in your current zone.
 * The deterministic planner ignores free-text notes. Only the AI reads them.

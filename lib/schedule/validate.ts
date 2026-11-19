@@ -69,30 +69,3 @@ export function validateSchedule(placements: Placement[], activities: Activity[]
 
   return { valid: errors.length === 0, errors };
 }
-
-export interface ActivitySummary {
-  activityId: string;
-  name: string;
-  color: string;
-  scheduledMinutes: number;
-  targetMinutes: number;
-  sessions: number;
-  onTarget: boolean;
-}
-
-export function summarize(placements: Placement[], activities: Activity[]): ActivitySummary[] {
-  return activities.map((a) => {
-    const mine = placements.filter((p) => p.activityId === a.id);
-    const scheduled = mine.reduce((s, p) => s + (p.end - p.start), 0);
-    const target = hoursToMinutes(a.hoursPerWeek);
-    return {
-      activityId: a.id,
-      name: a.name,
-      color: a.color,
-      scheduledMinutes: scheduled,
-      targetMinutes: target,
-      sessions: mine.length,
-      onTarget: Math.abs(scheduled - target) <= HOURS_TOLERANCE_MINUTES,
-    };
-  });
-}
