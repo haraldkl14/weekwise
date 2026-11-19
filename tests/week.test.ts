@@ -7,6 +7,10 @@ import {
   moveBlock,
   newBlockRange,
   overlapping,
+  paletteItems,
+  placeItem,
+  placementStart,
+  typicalLength,
   renameMatching,
   resizeBlock,
   sameTitleBlocks,
@@ -134,3 +138,49 @@ describe("summarizeBlocks", () => {
   });
 });
 
+
+describe("palette (re-adding activities from the side list)", () => {
+  const piano = (id: string, day: number, start: number, end: number): WeekBlock => ({
+    id,
+    kind: "activity",
+    title: "Piano",
+    color: "#ff0000",
+    day: day as WeekBlock["day"],
+    start,
+    end,
+  });
+
+  it("lists Step 2 activities and manually added ones, with their typical length", () => {
+    const blocks = [...week, piano("x1", 5, 600, 690)];
+    const items = paletteItems(blocks, [gym]);
+    expect(items).toEqual([
+      { key: "a:gym", title: "Gym", color: "#2563eb", minutes: 60, activityId: "gym" },
+      { key: "t:Piano", title: "Piano", color: "#ff0000", minutes: 90 },
+    ]);
+  });
+
+  it("uses the most common length, preferring the longer on ties", () => {
+    expect(typicalLength([{ start: 0, end: 60 }, { start: 0, end: 30 }, { start: 0, end: 30 }])).toBe(30);
+    expect(typicalLength([{ start: 0, end: 60 }, { start: 0, end: 90 }])).toBe(90);
+    expect(typicalLength([])).toBeNull();
+  });
+
+  it("falls back to the minimum session length for an activity with no blocks", () => {
+    expect(paletteItems([], [activity({ id: "yoga", name: "Yoga", minSessionHours: 0.75 })])[0].minutes).toBe(45);
+  });
+
+  it("places a copy with the same name, color, length and link", () => {
+    const items = paletteItems([...week, piano("x1", 5, 600, 690)], [gym]);
+    const placed = placeItem(week, items[1], 3, 14 * 60 + 7, "new");
+    expect(find(placed, (b) => b.id === "new")).toMatchObject({ title: "Piano", color: "#ff0000", day: 3, start: 840, end: 930 });
+    expect(find(placed, (b) => b.id === "new").activityId).toBeUndefined();
+    const linked = placeItem(week, items[0], 6, 600, "g");
+    expect(find(linked, (b) => b.id === "g")).toMatchObject({ activityId: "gym", end: 660 });
+    expect(summarizeBlocks(linked, [gym]).targets[0].sessions).toBe(3);
+  });
+
+  it("keeps placed blocks inside the day", () => {
+    expect(placementStart(1430, 90)).toBe(1350);
+    expect(placementStart(-10, 60)).toBe(0);
+  });
+});

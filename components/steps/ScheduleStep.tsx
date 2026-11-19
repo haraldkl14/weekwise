@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Day, GeneratedSchedule } from "@/lib/types";
 import { formatHours } from "@/lib/time";
-import { deleteBlock, renameMatching, summarizeBlocks, upsertBlock, WeekBlock } from "@/lib/schedule/week";
+import { deleteBlock, PaletteItem, paletteItems, placeItem, renameMatching, summarizeBlocks, upsertBlock, WeekBlock } from "@/lib/schedule/week";
 import { newId } from "@/lib/defaults";
 import { buildIcs, mondayOf } from "@/lib/ics";
 import type { GenerateErrorBody } from "@/lib/api";
@@ -48,13 +48,84 @@ export function ScheduleStep({
 }) {
   const [editing, setEditing] = useState<Editing>(null);
   const summary = useMemo(() => summarizeBlocks(blocks, activities), [blocks, activities]);
+  const palette = useMemo(() => new Map(paletteItems(blocks, activities).map((p) => [p.key, p])), [blocks, activities]);
+  const [placing, setPlacing] = useState<{ item: PaletteItem; byDrag: boolean } | null>(null);
+  const calendarRef = useRef<HTMLDivElement>(null);
+  const listDrag = useRef<{ item: PaletteItem; x: number; y: number; moved: boolean } | null>(null);
+
+  // Esc cancels placing.
+  useEffect(() => {
+    if (!placing) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setPlacing(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [placing]);
+
+  function place(day: Day, minute: number) {
+    if (!placing) return;
+    onBlocksChange(placeItem(blocks, placing.item, day, minute, newId("blk")));
+    setPlacing(null);
+  }
+
+  /** Mouse: press on a list item and drag it onto the calendar. */
+  function startListDrag(e: React.PointerEvent, item: PaletteItem) {
+    if (e.pointerType === "touch" || e.button !== 0) return;
+    e.preventDefault();
+    listDrag.current = { item, x: e.clientX, y: e.clientY, moved: false };
+    const onMove = (ev: PointerEvent) => {
+      const d = listDrag.current;
+      if (!d || d.moved || Math.hypot(ev.clientX - d.x, ev.clientY - d.y) < 4) return;
+      d.moved = true;
+      document.body.style.cursor = "grabbing";
+      setPlacing({ item: d.item, byDrag: true });
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.cursor = "";
+      // A drop on the calendar was already handled by its own pointerup.
+      if (listDrag.current?.moved) setPlacing(null);
+      listDrag.current = null;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
+  /** Click / tap / keyboard: pick the item, then click a time in the calendar. */
+  function togglePlacing(item: PaletteItem) {
+    setEditing(null);
+    const cancel = placing?.item.key === item.key && !placing.byDrag;
+    setPlacing(cancel ? null : { item, byDrag: false });
+    // On narrow screens the list is below the calendar: bring the calendar into view.
+    if (!cancel && window.innerWidth < 1280) calendarRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  const listRow = (item: PaletteItem | undefined, children: React.ReactNode) => {
+    if (!item) return <div className="px-2 py-1.5">{children}</div>;
+    const active = placing?.item.key === item.key;
+    return (
+      <button
+        type="button"
+        onPointerDown={(e) => startListDrag(e, item)}
+        onClick={() => togglePlacing(item)}
+        title={`Click, then click the calendar to add ${formatHours(item.minutes)} of ${item.title}, or drag it onto the calendar`}
+        className={`group w-full cursor-grab touch-manipulation rounded-lg px-2 py-1.5 text-left transition hover:bg-zinc-50 active:cursor-grabbing ${
+          active ? "bg-zinc-50 ring-2 ring-zinc-900" : ""
+        }`}
+      >
+        {children}
+      </button>
+    );
+  };
 
   function openEditor(id: string) {
+    setPlacing(null);
     const block = blocks.find((b) => b.id === id);
     if (block) setEditing({ block, isNew: false });
   }
 
   function openNew(day: Day, start: number, end: number) {
+    setPlacing(null);
     setEditing({ block: { id: newId("blk"), kind: "activity", title: "", color: "#0891b2", day, start, end }, isNew: true });
   }
 
@@ -130,7 +201,7 @@ export function ScheduleStep({
           </section>
 
           <div className="grid gap-4 xl:grid-cols-[1fr_20rem]">
-            <div className="flex flex-col gap-2">
+            <div ref={calendarRef} className="flex scroll-mt-4 flex-col gap-2">
               <p className="text-xs text-zinc-500">
                 <span className="hidden md:inline">
                   The plan is yours to change: drag any block to move it, drag its top or bottom edge to change the start or end, click it to edit, or click
@@ -138,6 +209,17 @@ export function ScheduleStep({
                 </span>
                 <span className="md:hidden">Tap any block to edit it, or tap empty time to add an activity. Overlaps are allowed.</span>
               </p>
+              {placing && !placing.byDrag && (
+                <div className="sticky top-0 z-40 flex items-center justify-between gap-3 rounded-lg bg-zinc-900 px-3 py-2 text-sm text-white">
+                  <span className="flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: placing.item.color }} />
+                    Click a time in the calendar to add {placing.item.title} ({formatHours(placing.item.minutes)})
+                  </span>
+                  <button type="button" className="rounded px-2 py-0.5 text-zinc-300 hover:bg-white/10 hover:text-white" onClick={() => setPlacing(null)}>
+                    Cancel
+                  </button>
+                </div>
+              )}
               <WeekCalendar
                 blocks={blocks}
                 editable
@@ -145,6 +227,9 @@ export function ScheduleStep({
                 onSelect={openEditor}
                 onChange={onBlocksChange}
                 onAdd={openNew}
+                placing={placing?.item ?? null}
+                placingByDrag={placing?.byDrag ?? false}
+                onPlace={place}
               />
             </div>
 
@@ -180,49 +265,67 @@ export function ScheduleStep({
                 </>
               )}
 
-              <Card title="Hours per activity">
-                <ul className="flex flex-col gap-3">
+              <Card title="Activities" description="Click one, then a time in the calendar, to add another session. Or drag it onto the calendar.">
+                <ul className="-mx-2 flex flex-col gap-1">
                   {summary.targets.map((s) => {
                     const onTarget = Math.abs(s.scheduledMinutes - s.targetMinutes) <= 30;
+                    const item = palette.get(`a:${s.activityId}`);
                     return (
                       <li key={s.activityId}>
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="flex items-center gap-2 font-medium">
-                            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: s.color }} />
-                            {s.name}
-                          </span>
-                          <span className={onTarget ? "text-zinc-600" : "font-medium text-amber-700"}>
-                            {formatHours(s.scheduledMinutes)} / {formatHours(s.targetMinutes)}
-                          </span>
-                        </div>
-                        <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-zinc-100">
-                          <div
-                            className="h-full rounded-full"
-                            style={{ width: `${Math.min(100, (s.scheduledMinutes / s.targetMinutes) * 100)}%`, backgroundColor: s.color }}
-                          />
-                        </div>
-                        <p className="mt-0.5 text-xs text-zinc-400">
-                          {s.sessions} session{s.sessions === 1 ? "" : "s"}
-                        </p>
+                        {listRow(
+                          item,
+                          <>
+                            <div className="flex items-center justify-between text-sm">
+                              <span className="flex items-center gap-2 font-medium">
+                                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: s.color }} />
+                                {s.name}
+                              </span>
+                              <span className={onTarget ? "text-zinc-600" : "font-medium text-amber-700"}>
+                                {formatHours(s.scheduledMinutes)} / {formatHours(s.targetMinutes)}
+                              </span>
+                            </div>
+                            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-zinc-100">
+                              <div
+                                className="h-full rounded-full"
+                                style={{ width: `${Math.min(100, (s.scheduledMinutes / s.targetMinutes) * 100)}%`, backgroundColor: s.color }}
+                              />
+                            </div>
+                            <p className="mt-0.5 flex justify-between text-xs text-zinc-400">
+                              <span>
+                                {s.sessions} session{s.sessions === 1 ? "" : "s"}
+                              </span>
+                              {item && <span className="opacity-0 transition group-hover:opacity-100">+ add {formatHours(item.minutes)}</span>}
+                            </p>
+                          </>,
+                        )}
                       </li>
                     );
                   })}
                 </ul>
                 {summary.extras.length > 0 && (
                   <>
-                    <h3 className="mt-4 mb-2 text-xs font-semibold tracking-wide text-zinc-500 uppercase">Added by you</h3>
-                    <ul className="flex flex-col gap-1.5">
-                      {summary.extras.map((x) => (
-                        <li key={x.title} className="flex items-center justify-between text-sm">
-                          <span className="flex items-center gap-2">
-                            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: x.color }} />
-                            {x.title}
-                          </span>
-                          <span className="text-zinc-600">
-                            {formatHours(x.minutes)} · {x.sessions}×
-                          </span>
-                        </li>
-                      ))}
+                    <h3 className="mt-4 mb-1 text-xs font-semibold tracking-wide text-zinc-500 uppercase">Added by you</h3>
+                    <ul className="-mx-2 flex flex-col gap-1">
+                      {summary.extras.map((x) => {
+                        const item = palette.get(`t:${x.title}`);
+                        return (
+                          <li key={x.title}>
+                            {listRow(
+                              item,
+                              <div className="flex items-center justify-between text-sm">
+                                <span className="flex items-center gap-2">
+                                  <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: x.color }} />
+                                  {x.title}
+                                </span>
+                                <span className="text-zinc-600">
+                                  <span className="mr-2 text-xs text-zinc-400 opacity-0 transition group-hover:opacity-100">+ add {item && formatHours(item.minutes)}</span>
+                                  {formatHours(x.minutes)} · {x.sessions}×
+                                </span>
+                              </div>,
+                            )}
+                          </li>
+                        );
+                      })}
                     </ul>
                   </>
                 )}

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Day, DAY_LONG, DAY_SHORT, DAYS } from "@/lib/types";
 import { formatHHMM } from "@/lib/time";
-import { BlockKind, gapAt, layoutDay, moveBlock, newBlockRange, resizeBlock, WeekBlock } from "@/lib/schedule/week";
+import { BlockKind, gapAt, layoutDay, moveBlock, newBlockRange, PaletteItem, placementStart, resizeBlock, WeekBlock } from "@/lib/schedule/week";
 
 const PX_PER_MIN = 44 / 60; // 44px per hour
 const DAY_HEIGHT = 1440 * PX_PER_MIN;
@@ -36,9 +36,14 @@ export interface WeekCalendarProps {
   onSelect?: (id: string) => void;
   onChange?: (blocks: WeekBlock[]) => void;
   onAdd?: (day: Day, start: number, end: number) => void;
+  /** An item from the side list being placed: the next click (or drop) puts a copy there. */
+  placing?: PaletteItem | null;
+  /** True while the item is being dragged from the list (place on pointer release). */
+  placingByDrag?: boolean;
+  onPlace?: (day: Day, minute: number) => void;
 }
 
-export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, onChange, onAdd }: WeekCalendarProps) {
+export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, onChange, onAdd, placing, placingByDrag, onPlace }: WeekCalendarProps) {
   const [mobileDay, setMobileDay] = useState<Day>(() => (((new Date().getDay() + 6) % 7) as Day));
   /** Blocks as they look mid-drag; null when not dragging. */
   const [preview, setPreview] = useState<WeekBlock[] | null>(null);
@@ -136,13 +141,18 @@ export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, o
           if (el) columns.current.set(key, { day, el });
           else columns.current.delete(key);
         }}
-        className={`relative border-l border-zinc-200 ${editable ? "cursor-cell" : ""}`}
+        className={`relative border-l border-zinc-200 ${placing ? "cursor-copy" : editable ? "cursor-cell" : ""}`}
         style={{ height: DAY_HEIGHT }}
         onPointerMove={
           editable
             ? (e) => {
                 if (session.current || e.pointerType === "touch") return;
                 const minute = minuteAt(e.clientY, e.currentTarget);
+                if (placing) {
+                  const start = placementStart(minute, placing.minutes);
+                  if (!hover || hover.day !== day || hover.start !== start) setHover({ day, start, end: Math.min(1440, start + placing.minutes) });
+                  return;
+                }
                 const range = gapAt(blocks, day, minute) ? newBlockRange(blocks, day, minute) : null;
                 if (!range) return setHover(null);
                 if (!hover || hover.day !== day || hover.start !== range.start) setHover({ day, ...range });
@@ -150,11 +160,24 @@ export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, o
             : undefined
         }
         onPointerLeave={editable ? () => setHover(null) : undefined}
+        onPointerUp={
+          editable && placing && placingByDrag
+            ? (e) => {
+                setHover(null);
+                onPlace?.(day, minuteAt(e.clientY, e.currentTarget));
+              }
+            : undefined
+        }
         onClick={
           editable
             ? (e) => {
                 if (suppressClick.current) return void (suppressClick.current = false);
                 const minute = minuteAt(e.clientY, e.currentTarget);
+                if (placing) {
+                  setHover(null);
+                  if (!placingByDrag) onPlace?.(day, minute);
+                  return;
+                }
                 if (!gapAt(blocks, day, minute)) return;
                 const range = newBlockRange(blocks, day, minute);
                 onAdd?.(day, range.start, range.end);
@@ -168,7 +191,19 @@ export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, o
           </div>
         ))}
 
-        {hover && hover.day === day && (
+        {hover && hover.day === day && placing && (
+          <div
+            className="pointer-events-none absolute inset-x-1 z-40 overflow-hidden rounded-md border-2 border-dashed border-white px-1.5 py-0.5 text-[11px] leading-tight text-white opacity-80 shadow-lg"
+            style={{ top: hover.start * PX_PER_MIN, height: (hover.end - hover.start) * PX_PER_MIN - 1, backgroundColor: placing.color }}
+          >
+            <span className="font-semibold">{placing.title}</span>
+            <span className="block">
+              {formatHHMM(hover.start)}–{formatHHMM(hover.end)}
+            </span>
+          </div>
+        )}
+
+        {hover && hover.day === day && !placing && (
           <div
             className="pointer-events-none absolute inset-x-1 z-0 flex items-start rounded-md border border-dashed border-zinc-400 bg-zinc-50 px-1.5 py-0.5 text-[11px] font-medium text-zinc-500"
             style={{ top: hover.start * PX_PER_MIN, height: (hover.end - hover.start) * PX_PER_MIN - 1 }}
@@ -203,7 +238,7 @@ export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, o
               onKeyDown={interactive ? (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onSelect?.(b.id)) : undefined}
               className={`group absolute overflow-hidden rounded-md px-1.5 py-0.5 text-[11px] leading-tight ${style} ${
                 interactive ? "cursor-grab select-none outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 active:cursor-grabbing" : "pointer-events-none"
-              } ${selectedId === b.id ? "ring-2 ring-zinc-900 ring-offset-1" : ""} ${draggingId === b.id ? "z-30 opacity-90 shadow-lg" : isActivity ? "z-20" : "z-10"}`}
+              } ${placing ? "pointer-events-none" : ""} ${selectedId === b.id ? "ring-2 ring-zinc-900 ring-offset-1" : ""} ${draggingId === b.id ? "z-30 opacity-90 shadow-lg" : isActivity ? "z-20" : "z-10"}`}
               style={{
                 top: b.start * PX_PER_MIN,
                 height: Math.max(2, len * PX_PER_MIN - 1),

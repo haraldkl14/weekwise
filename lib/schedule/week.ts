@@ -199,3 +199,59 @@ export function summarizeBlocks(blocks: WeekBlock[], activities: Activity[]): Bl
   }
   return { targets, extras: [...extras.values()] };
 }
+
+/** An activity you can place again from the side list: same name, color and length. */
+export interface PaletteItem {
+  key: string;
+  title: string;
+  color: string;
+  /** Length of a new block placed from this item. */
+  minutes: number;
+  activityId?: string;
+}
+
+/** Most common block length; ties go to the longer one. */
+export function typicalLength(blocks: Pick<WeekBlock, "start" | "end">[]): number | null {
+  const counts = new Map<number, number>();
+  for (const b of blocks) counts.set(b.end - b.start, (counts.get(b.end - b.start) ?? 0) + 1);
+  let best: number | null = null;
+  for (const [len, n] of counts) if (best === null || n > counts.get(best)! || (n === counts.get(best)! && len > best)) best = len;
+  return best;
+}
+
+export function paletteItems(blocks: WeekBlock[], activities: Activity[]): PaletteItem[] {
+  const acts = blocks.filter((b) => b.kind === "activity");
+  const known = new Set(activities.map((a) => a.id));
+  const items: PaletteItem[] = activities.map((a) => ({
+    key: `a:${a.id}`,
+    title: a.name,
+    color: a.color,
+    minutes: typicalLength(acts.filter((b) => b.activityId === a.id)) ?? Math.round(a.minSessionHours * 60),
+    activityId: a.id,
+  }));
+  const extras = new Map<string, WeekBlock[]>();
+  for (const b of acts.filter((x) => !x.activityId || !known.has(x.activityId))) extras.set(b.title, [...(extras.get(b.title) ?? []), b]);
+  for (const [title, group] of extras) {
+    items.push({ key: `t:${title}`, title, color: group[group.length - 1].color ?? "#71717a", minutes: typicalLength(group)! });
+  }
+  return items;
+}
+
+/** Start minute for placing an item whose top edge is at `minute`: snapped, and fully inside the day. */
+export function placementStart(minute: number, minutes: number): number {
+  return clamp(Math.floor(minute / STEP_MINUTES) * STEP_MINUTES, 0, DAY_END - Math.min(minutes, DAY_END));
+}
+
+export function placeItem(blocks: WeekBlock[], item: PaletteItem, day: Day, minute: number, id: string): WeekBlock[] {
+  const start = placementStart(minute, item.minutes);
+  return upsertBlock(blocks, {
+    id,
+    kind: "activity",
+    title: item.title,
+    color: item.color,
+    day,
+    start,
+    end: Math.min(DAY_END, start + item.minutes),
+    ...(item.activityId ? { activityId: item.activityId } : {}),
+  });
+}
