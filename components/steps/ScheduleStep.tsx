@@ -244,7 +244,7 @@ export function ScheduleStep({
                       initial={editing.block}
                       isNew={editing.isNew}
                       blocks={blocks}
-                      activities={activities}
+                      palette={[...palette.values()]}
                       onClose={() => setEditing(null)}
                       onDelete={
                         editing.isNew

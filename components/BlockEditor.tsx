@@ -1,9 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Activity, Day, DAY_LONG, DAYS } from "@/lib/types";
+import { Day, DAY_LONG, DAYS } from "@/lib/types";
 import { formatHHMM, formatHours, isValidHHMM, parseHHMM } from "@/lib/time";
-import { overlapping, sameTitleBlocks, timeError, WeekBlock } from "@/lib/schedule/week";
+import { overlapping, PaletteItem, sameTitleBlocks, timeError, WeekBlock } from "@/lib/schedule/week";
 import { Button, Field, inputClass } from "./ui";
 
 const KIND_NOTE: Record<WeekBlock["kind"], string | null> = {
@@ -24,7 +24,7 @@ export function BlockEditor({
   initial,
   isNew,
   blocks,
-  activities,
+  palette,
   onSave,
   onDelete,
   onClose,
@@ -32,7 +32,8 @@ export function BlockEditor({
   initial: WeekBlock;
   isNew: boolean;
   blocks: WeekBlock[];
-  activities: Activity[];
+  /** Step 2 activities and the ones the user created in the calendar. */
+  palette: PaletteItem[];
   onSave: (block: WeekBlock, renameAll: boolean) => void;
   onDelete?: () => void;
   onClose: () => void;
@@ -58,9 +59,17 @@ export function BlockEditor({
     onSave({ ...draft, title: draft.title.trim(), start, end }, renameAll && renamed && siblings.length > 1);
   }
 
-  function link(activityId: string) {
-    const a = activities.find((x) => x.id === activityId);
-    setDraft(a ? { ...draft, activityId: a.id, title: a.name, color: a.color } : { ...draft, activityId: undefined });
+  const targets = palette.filter((p) => p.activityId);
+  const created = palette.filter((p) => !p.activityId);
+  const selectedKey = draft.activityId ? `a:${draft.activityId}` : (created.find((p) => p.title === draft.title.trim())?.key ?? "");
+
+  /** Picking an existing activity copies its name and color (and, for a new block, its usual length). */
+  function pick(key: string) {
+    const item = palette.find((p) => p.key === key);
+    if (!item) return setDraft({ ...draft, activityId: undefined });
+    setDraft({ ...draft, title: item.title, color: item.color, activityId: item.activityId });
+    setError(null);
+    if (isNew && Number.isFinite(start)) setEndText(formatHHMM(Math.min(1440, start + item.minutes) % 1440));
   }
 
   return (
@@ -74,15 +83,28 @@ export function BlockEditor({
 
       {KIND_NOTE[draft.kind] && <p className="rounded-lg bg-zinc-50 px-3 py-2 text-xs text-zinc-600">{KIND_NOTE[draft.kind]}</p>}
 
-      {isActivity && activities.length > 0 && (
-        <Field label="Counts toward" hint="Linked blocks count toward that activity’s weekly hours.">
-          <select className={inputClass} value={draft.activityId ?? ""} onChange={(e) => link(e.target.value)}>
-            <option value="">Nothing (one-off)</option>
-            {activities.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
+      {isActivity && palette.length > 0 && (
+        <Field label="Activity" hint="Pick one to reuse its name and color. Activities with a weekly target count toward its hours.">
+          <select className={inputClass} value={selectedKey} onChange={(e) => pick(e.target.value)}>
+            <option value="">{isNew ? "New activity…" : "Not linked (one-off)"}</option>
+            {targets.length > 0 && (
+              <optgroup label="With a weekly target">
+                {targets.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.title}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {created.length > 0 && (
+              <optgroup label="Added by you">
+                {created.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.title}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
         </Field>
       )}
