@@ -47,6 +47,7 @@ export function ScheduleStep({
   onBack: () => void;
 }) {
   const [editing, setEditing] = useState<Editing>(null);
+  const [calendarExpanded, setCalendarExpanded] = useState(false);
   const summary = useMemo(() => summarizeBlocks(blocks, activities), [blocks, activities]);
   const palette = useMemo(() => new Map(paletteItems(blocks, activities).map((p) => [p.key, p])), [blocks, activities]);
   const [placing, setPlacing] = useState<{ item: PaletteItem; byDrag: boolean } | null>(null);
@@ -230,6 +231,12 @@ export function ScheduleStep({
                 placing={placing?.item ?? null}
                 placingByDrag={placing?.byDrag ?? false}
                 onPlace={place}
+                onExpandedChange={setCalendarExpanded}
+                expandedToolbar={
+                  <Button variant="secondary" className="!py-1 text-xs" onClick={onUndo} disabled={!canUndo} title="Undo (Ctrl+Z)">
+                    ↶ Undo
+                  </Button>
+                }
               />
             </div>
 
@@ -237,8 +244,19 @@ export function ScheduleStep({
               {editing && (
                 <>
                   {/* Bottom sheet on small screens, sidebar card on wide screens. */}
-                  <div className="fixed inset-0 z-40 bg-black/20 xl:hidden" onClick={() => setEditing(null)} aria-hidden />
-                  <div className="fixed inset-x-0 bottom-0 z-50 max-h-[85vh] overflow-y-auto rounded-t-2xl border-t border-zinc-200 bg-white p-4 shadow-2xl xl:static xl:max-h-none xl:rounded-xl xl:border xl:p-5 xl:shadow-none">
+                  {/* Above the full-screen calendar when it's expanded: floating card on desktop, bottom sheet on phones. */}
+                  <div
+                    className={`fixed inset-0 bg-black/20 ${calendarExpanded ? "z-[55] md:hidden" : "z-40 xl:hidden"}`}
+                    onClick={() => setEditing(null)}
+                    aria-hidden
+                  />
+                  <div
+                    className={
+                      calendarExpanded
+                        ? "fixed inset-x-0 bottom-0 z-[60] max-h-[85vh] overflow-y-auto rounded-t-2xl border-t border-zinc-200 bg-white p-4 shadow-2xl md:inset-x-auto md:top-16 md:right-4 md:bottom-auto md:w-[22rem] md:rounded-xl md:border md:p-5"
+                        : "fixed inset-x-0 bottom-0 z-50 max-h-[85vh] overflow-y-auto rounded-t-2xl border-t border-zinc-200 bg-white p-4 shadow-2xl xl:static xl:max-h-none xl:rounded-xl xl:border xl:p-5 xl:shadow-none"
+                    }
+                  >
                     <BlockEditor
                       key={editing.block.id}
                       initial={editing.block}

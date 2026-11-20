@@ -1,12 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Day, DAY_LONG, DAY_SHORT, DAYS } from "@/lib/types";
 import { formatHHMM } from "@/lib/time";
 import { BlockKind, gapAt, layoutDay, moveBlock, newBlockRange, PaletteItem, placementStart, resizeBlock, WeekBlock } from "@/lib/schedule/week";
 
-const PX_PER_MIN = 44 / 60; // 44px per hour
-const DAY_HEIGHT = 1440 * PX_PER_MIN;
+const DEFAULT_PX_PER_MIN = 44 / 60; // 44px per hour; expanded view fits 24h to the screen instead
 const HOURS = Array.from({ length: 24 }, (_, h) => h);
 const EDGE_PX = 7; // grab zone for resizing
 const DRAG_THRESHOLD_PX = 4;
@@ -41,14 +40,35 @@ export interface WeekCalendarProps {
   /** True while the item is being dragged from the list (place on pointer release). */
   placingByDrag?: boolean;
   onPlace?: (day: Day, minute: number) => void;
+  /** Extra controls shown in the header of the expanded (full-screen) view. */
+  expandedToolbar?: ReactNode;
+  onExpandedChange?: (expanded: boolean) => void;
 }
 
-export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, onChange, onAdd, placing, placingByDrag, onPlace }: WeekCalendarProps) {
+export function WeekCalendar({
+  blocks,
+  editable = false,
+  selectedId,
+  onSelect,
+  onChange,
+  onAdd,
+  placing,
+  placingByDrag,
+  onPlace,
+  expandedToolbar,
+  onExpandedChange,
+}: WeekCalendarProps) {
   const [mobileDay, setMobileDay] = useState<Day>(() => (((new Date().getDay() + 6) % 7) as Day));
   /** Blocks as they look mid-drag; null when not dragging. */
   const [preview, setPreview] = useState<WeekBlock[] | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [hover, setHover] = useState<{ day: Day; start: number; end: number } | null>(null);
+  /** Full-screen mode: the whole day (00–24) is scaled to fit the screen height, no scrolling. */
+  const [expanded, setExpandedState] = useState(false);
+  const [fitPx, setFitPx] = useState(DEFAULT_PX_PER_MIN);
+  const PX_PER_MIN = expanded ? fitPx : DEFAULT_PX_PER_MIN;
+  const DAY_HEIGHT = 1440 * PX_PER_MIN;
+  const hourPx = 60 * PX_PER_MIN;
 
   const session = useRef<DragSession | null>(null);
   const suppressClick = useRef(false);
@@ -56,9 +76,11 @@ export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, o
   const scrollRefs = useRef<(HTMLDivElement | null)[]>([]);
   const blocksRef = useRef(blocks);
   const onChangeRef = useRef(onChange);
+  const onExpandedChangeRef = useRef(onExpandedChange);
   useEffect(() => {
     blocksRef.current = blocks;
     onChangeRef.current = onChange;
+    onExpandedChangeRef.current = onExpandedChange;
   });
 
   const shown = preview ?? blocks;
@@ -71,10 +93,43 @@ export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, o
     return m;
   }, [shown]);
 
-  // Start scrolled to 06:00.
+  function setExpanded(next: boolean) {
+    setExpandedState(next);
+    onExpandedChange?.(next);
+  }
+
+  // Normal view starts scrolled to 06:00.
   useEffect(() => {
-    for (const el of scrollRefs.current) if (el) el.scrollTop = 6 * 60 * PX_PER_MIN - 8;
-  }, []);
+    if (expanded) return;
+    for (const el of scrollRefs.current) if (el) el.scrollTop = 6 * 60 * DEFAULT_PX_PER_MIN - 8;
+  }, [expanded]);
+
+  // Expanded view: fit 24h into the available height, lock page scroll, Esc to leave.
+  useEffect(() => {
+    if (!expanded) return;
+    const measure = () => {
+      const h = Math.max(...scrollRefs.current.map((el) => el?.clientHeight ?? 0));
+      if (h > 0) setFitPx(Math.max(0.25, (h - 2) / 1440));
+    };
+    const ro = new ResizeObserver(measure);
+    for (const el of scrollRefs.current) if (el) ro.observe(el);
+    measure();
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (e.key === "Escape" && !(t && ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName))) {
+        setExpandedState(false);
+        onExpandedChangeRef.current?.(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      ro.disconnect();
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [expanded]);
 
   function dayUnder(clientX: number): Day | null {
     for (const { day, el } of columns.current.values()) {
@@ -255,8 +310,8 @@ export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, o
                   </span>
                 </>
               )}
-              {len >= 30 && <span className={isActivity ? "font-semibold" : "font-medium"}>{b.title}</span>}
-              {len >= 45 && (
+              {len * PX_PER_MIN >= 14 && <span className={isActivity ? "font-semibold" : "font-medium"}>{b.title}</span>}
+              {len * PX_PER_MIN >= 28 && (
                 <span className="block opacity-90">
                   {formatHHMM(b.start)}–{formatHHMM(b.end)}
                 </span>
@@ -272,16 +327,37 @@ export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, o
     <div className="relative" style={{ height: DAY_HEIGHT }}>
       {HOURS.map((h) => (
         <div key={h} className="absolute right-1 -translate-y-1/2 text-[10px] tabular-nums text-zinc-400" style={{ top: h * 60 * PX_PER_MIN }}>
-          {h === 0 ? "" : `${String(h).padStart(2, "0")}:00`}
+          {h === 0 || (hourPx < 22 && h % 2 === 1) ? "" : `${String(h).padStart(2, "0")}:00`}
         </div>
       ))}
     </div>
   );
 
   return (
-    <div className="rounded-xl border border-zinc-200 bg-white">
+    <div
+      className={expanded ? "fixed inset-0 z-50 flex flex-col bg-white" : "rounded-xl border border-zinc-200 bg-white"}
+      role={expanded ? "dialog" : undefined}
+      aria-modal={expanded || undefined}
+      aria-label={expanded ? "Expanded calendar" : undefined}
+    >
+      <div className={`flex items-center justify-between gap-2 border-b border-zinc-200 ${expanded ? "px-4 py-2" : "px-2 py-1"}`}>
+        {expanded ? <span className="text-sm font-semibold text-zinc-900">Your week</span> : <span />}
+        <div className="flex items-center gap-2">
+          {expanded && expandedToolbar}
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"
+            title={expanded ? "Back to normal view (Esc)" : "Show the whole week on the full screen"}
+          >
+            <span aria-hidden>{expanded ? "⤡" : "⤢"}</span>
+            {expanded ? "Collapse" : "Expand"}
+          </button>
+        </div>
+      </div>
+
       {/* Desktop / tablet: full week grid */}
-      <div className="hidden md:block">
+      <div className={expanded ? "hidden min-h-0 flex-1 flex-col md:flex" : "hidden md:block"}>
         <div className="grid grid-cols-[3rem_repeat(7,minmax(0,1fr))] border-b border-zinc-200 text-center text-xs font-medium text-zinc-600">
           <div />
           {DAYS.map((d) => (
@@ -290,7 +366,7 @@ export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, o
             </div>
           ))}
         </div>
-        <div ref={(el) => void (scrollRefs.current[0] = el)} className="max-h-[65vh] overflow-y-auto">
+        <div ref={(el) => void (scrollRefs.current[0] = el)} className={expanded ? "min-h-0 flex-1 overflow-hidden" : "max-h-[65vh] overflow-y-auto"}>
           <div className="grid grid-cols-[3rem_repeat(7,minmax(0,1fr))]">
             {gutter}
             {DAYS.map((d) => (
@@ -301,7 +377,7 @@ export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, o
       </div>
 
       {/* Mobile: one day at a time */}
-      <div className="md:hidden">
+      <div className={expanded ? "flex min-h-0 flex-1 flex-col md:hidden" : "md:hidden"}>
         <div className="flex gap-1 overflow-x-auto border-b border-zinc-200 p-2" role="tablist">
           {DAYS.map((d) => (
             <button
@@ -315,8 +391,8 @@ export function WeekCalendar({ blocks, editable = false, selectedId, onSelect, o
             </button>
           ))}
         </div>
-        <p className="px-3 pt-2 text-sm font-medium text-zinc-700">{DAY_LONG[mobileDay]}</p>
-        <div ref={(el) => void (scrollRefs.current[1] = el)} className="max-h-[60vh] overflow-y-auto">
+        {!expanded && <p className="px-3 pt-2 text-sm font-medium text-zinc-700">{DAY_LONG[mobileDay]}</p>}
+        <div ref={(el) => void (scrollRefs.current[1] = el)} className={expanded ? "min-h-0 flex-1 overflow-hidden" : "max-h-[60vh] overflow-y-auto"}>
           <div className="grid grid-cols-[3rem_1fr]">
             {gutter}
             {renderColumn(mobileDay, "mob")}
